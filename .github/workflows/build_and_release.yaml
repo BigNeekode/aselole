@@ -15,16 +15,27 @@ jobs:
     name: Fetch deps info
     runs-on: ubuntu-latest
     outputs:
-      download-link: ${{ steps.aseprite-link.outputs.download-link }}
-      release-tag: ${{ steps.aseprite-link.outputs.release-tag }}
+      release-download-link: ${{ steps.aseprite-release.outputs.download-link }}
+      release-tag: ${{ steps.aseprite-release.outputs.release-tag }}
+      prerelease-download-link: ${{ steps.aseprite-prerelease.outputs.download-link }}
+      prerelease-tag: ${{ steps.aseprite-prerelease.outputs.release-tag }}
     steps:
       - name: Fetch Aseprite release link
-        id: aseprite-link
+        id: aseprite-release
         uses: a1393323447/fetch-release@main
         with:
             group: aseprite
             repo: aseprite
             match: Aseprite-.*?-Source.zip
+            prerelease: false
+      - name: Fetch Aseprite pre-release link
+        id: aseprite-prerelease
+        uses: a1393323447/fetch-release@main
+        with:
+            group: aseprite
+            repo: aseprite
+            match: Aseprite-.*?-Source.zip
+            prerelease: true
 
   create-release:
     name: Create Release
@@ -32,16 +43,33 @@ jobs:
     needs: fetch-aseprite-info
     permissions:
       contents: write
+    strategy:
+      matrix:
+        version-type: [release, prerelease]
     outputs:
-      download-link: ${{ needs.fetch-aseprite-info.outputs.download-link }}
+      release-download-link: ${{ needs.fetch-aseprite-info.outputs.release-download-link }}
       release-tag: ${{ needs.fetch-aseprite-info.outputs.release-tag }}
+      prerelease-download-link: ${{ needs.fetch-aseprite-info.outputs.prerelease-download-link }}
+      prerelease-tag: ${{ needs.fetch-aseprite-info.outputs.prerelease-tag }}
     steps:
       - uses: actions/checkout@v2
-      - uses: ncipollo/release-action@v1
+      - name: Create release version
+        if: matrix.version-type == 'release'
+        uses: ncipollo/release-action@v1
         with:
           tag: ${{ needs.fetch-aseprite-info.outputs.release-tag }}
-          body: Aseprite-${{ needs.fetch-aseprite-info.outputs.release-tag }}
+          body: Aseprite-${{ needs.fetch-aseprite-info.outputs.release-tag }} (Release)
           skipIfReleaseExists: true
+          prerelease: false
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create pre-release version
+        if: matrix.version-type == 'prerelease'
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ needs.fetch-aseprite-info.outputs.prerelease-tag }}-prerelease
+          body: Aseprite-${{ needs.fetch-aseprite-info.outputs.prerelease-tag }} (Pre-release)
+          skipIfReleaseExists: true
+          prerelease: true
           token: ${{ secrets.GITHUB_TOKEN }}
 
   build-aseprite:
@@ -53,6 +81,7 @@ jobs:
     strategy:
         matrix:
           os: [ windows-latest, ubuntu-latest, macOS-latest ]
+          version-type: [release, prerelease]
         fail-fast: false
     steps:
       - name: Install Dependencies
@@ -67,7 +96,11 @@ jobs:
       - name: Install Aseprite
         shell: bash
         run: |
-          git clone --recurse-submodules -j8 https://github.com/aseprite/aseprite --branch ${{ needs.create-release.outputs.release-tag }}
+          if [[ "${{ matrix.version-type }}" == "release" ]]; then
+            git clone --recurse-submodules -j8 https://github.com/aseprite/aseprite --branch ${{ needs.create-release.outputs.release-tag }}
+          else
+            git clone --recurse-submodules -j8 https://github.com/aseprite/aseprite --branch ${{ needs.create-release.outputs.prerelease-tag }}
+          fi
       - name: Install Skia
         working-directory: aseprite
         shell: bash
@@ -124,11 +157,25 @@ jobs:
         run: echo '# This file is here so Aseprite behaves as a portable program' > aseprite.ini
       - name: Create release
         working-directory: aseprite/build/bin
-        run: 7z -tzip a Aseprite-${{ needs.create-release.outputs.release-tag }}-${{ runner.os }}.zip *
+        run: |
+          if [[ "${{ matrix.version-type }}" == "release" ]]; then
+            7z -tzip a Aseprite-${{ needs.create-release.outputs.release-tag }}-${{ runner.os }}.zip *
+          else
+            7z -tzip a Aseprite-${{ needs.create-release.outputs.prerelease-tag }}-prerelease-${{ runner.os }}.zip *
+          fi
       - name: Upload release
+        if: matrix.version-type == 'release'
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           file: aseprite/build/bin/Aseprite-${{ needs.create-release.outputs.release-tag }}-${{ runner.os }}.zip
           asset_name: Aseprite-${{ needs.create-release.outputs.release-tag }}-${{ runner.os }}.zip
           tag: ${{ needs.create-release.outputs.release-tag }}
+      - name: Upload pre-release
+        if: matrix.version-type == 'prerelease'
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: aseprite/build/bin/Aseprite-${{ needs.create-release.outputs.prerelease-tag }}-prerelease-${{ runner.os }}.zip
+          asset_name: Aseprite-${{ needs.create-release.outputs.prerelease-tag }}-prerelease-${{ runner.os }}.zip
+          tag: ${{ needs.create-release.outputs.prerelease-tag }}-prerelease
